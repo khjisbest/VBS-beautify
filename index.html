@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VBS Beautifier</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: monospace;
+            font-size: 12px;
+            line-height: 1.6;
+            padding: 20px;
+            background: white;
+            color: black;
+        }
+
+        h1 {
+            font-size: 16px;
+            margin-bottom: 20px;
+            border-bottom: 1px solid #000;
+            padding-bottom: 5px;
+        }
+
+        button {
+            padding: 5px 10px;
+            margin-right: 8px;
+            background: white;
+            border: 1px solid #000;
+            cursor: pointer;
+            font-family: monospace;
+            font-size: 12px;
+        }
+
+        button:hover {
+            background: #f0f0f0;
+        }
+
+        .section {
+            margin-bottom: 24px;
+        }
+
+        .section-title {
+            font-weight: bold;
+            border-bottom: 1px dashed #000;
+            padding: 5px 0;
+            margin-bottom: 10px;
+        }
+
+        textarea {
+            width: 100%;
+            font-family: monospace;
+            font-size: 12px;
+            line-height: 1.6;
+            border: 1px solid #000;
+            padding: 8px;
+            resize: vertical;
+            background: white;
+            color: black;
+            tab-size: 4;
+        }
+
+        .options {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 20px;
+            padding: 4px 0;
+        }
+
+        .option-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            cursor: pointer;
+            user-select: none;
+        }
+
+        /* Toggle switch */
+        .toggle {
+            position: relative;
+            display: inline-block;
+            width: 34px;
+            height: 17px;
+            flex-shrink: 0;
+        }
+
+        .toggle input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+            position: absolute;
+        }
+
+        .slider {
+            position: absolute;
+            cursor: pointer;
+            inset: 0;
+            background: #ccc;
+            border: 1px solid #888;
+            transition: background 0.15s, border-color 0.15s;
+        }
+
+        .slider::before {
+            content: "";
+            position: absolute;
+            height: 11px;
+            width: 11px;
+            left: 2px;
+            top: 2px;
+            background: white;
+            border: 1px solid #888;
+            transition: transform 0.15s;
+        }
+
+        input:checked + .slider {
+            background: #000;
+            border-color: #000;
+        }
+
+        input:checked + .slider::before {
+            transform: translateX(17px);
+            border-color: #555;
+        }
+
+        .actions {
+            margin-bottom: 20px;
+        }
+
+        .status {
+            display: inline-block;
+            margin-left: 8px;
+            color: #555;
+        }
+    </style>
+</head>
+<body>
+    <h1>VBS Beautifier</h1>
+
+    <div class="section">
+        <div class="section-title">Options</div>
+        <div class="options">
+            <label class="option-item">
+                <span class="toggle">
+                    <input type="checkbox" id="opt-math" checked>
+                    <span class="slider"></span>
+                </span>
+                Eval arithmetic
+            </label>
+            <label class="option-item">
+                <span class="toggle">
+                    <input type="checkbox" id="opt-chr" checked>
+                    <span class="slider"></span>
+                </span>
+                Resolve Chr()
+            </label>
+            <label class="option-item">
+                <span class="toggle">
+                    <input type="checkbox" id="opt-replace" checked>
+                    <span class="slider"></span>
+                </span>
+                Resolve Replace()
+            </label>
+            <label class="option-item">
+                <span class="toggle">
+                    <input type="checkbox" id="opt-concat" checked>
+                    <span class="slider"></span>
+                </span>
+                Join &amp; / + concat
+            </label>
+            <label class="option-item">
+                <span class="toggle">
+                    <input type="checkbox" id="opt-beautify" checked>
+                    <span class="slider"></span>
+                </span>
+                Beautify (indentation)
+            </label>
+        </div>
+    </div>
+
+    <div class="section">
+        <div class="section-title">Input</div>
+        <textarea id="input" rows="18" placeholder="Paste VBS / VBScript code here..."></textarea>
+    </div>
+
+    <div class="actions">
+        <button onclick="processCode()">Process</button>
+        <button onclick="copyOutput(this)">Copy Output</button>
+        <button onclick="clearAll()">Clear</button>
+        <span class="status" id="status"></span>
+    </div>
+
+    <div class="section">
+        <div class="section-title">Output</div>
+        <textarea id="output" rows="18" readonly placeholder="Output will appear here..."></textarea>
+    </div>
+
+    <script>
+    // ============================================================
+    // VBS string literal regex pattern (built once, reused safely)
+    //
+    // A VBS string is:  "..."  where "" inside means escaped quote.
+    //
+    // Pattern for the content (as JS string, for use in RegExp):
+    //   (?:[^"]|"")*
+    //   - [^"]  = any character that is NOT a double-quote
+    //   - |""   = OR two consecutive double-quotes (escaped quote)
+    //
+    // Full literal pattern (with surrounding quotes + capture group):
+    //   "((?:[^"]|"")*)"
+    //
+    // Using RegExp constructor throughout to avoid inline regex typos.
+    // ============================================================
+    const VBS_STR = '"((?:[^"]|"")*)"';   // matches one VBS string literal, captures content
+
+    // Precompiled regexes
+    const RE_REPL  = new RegExp(
+        String.raw`\bReplace\s*\(\s*` + VBS_STR + String.raw`\s*,\s*` + VBS_STR + String.raw`\s*,\s*` + VBS_STR + String.raw`\s*\)`,
+        'gi'
+    );
+    const RE_JOIN  = new RegExp(VBS_STR + String.raw`\s*[&+]\s*` + VBS_STR, 'g');
+
+    // ============================================================
+    // Tokenizer: splits one line into {type, value} tokens
+    //   type = 'code' | 'string' | 'comment'
+    // ============================================================
+    function tokenizeLine(line) {
+        const tokens = [];
+        let i = 0;
+        let buf = '';
+
+        while (i < line.length) {
+            const ch = line[i];
+            if (ch === '"') {
+                if (buf) { tokens.push({ type: 'code', value: buf }); buf = ''; }
+                let s = '"'; i++;
+                while (i < line.length) {
+                    if (line[i] === '"') {
+                        if (i + 1 < line.length && line[i + 1] === '"') {
+                            s += '""'; i += 2;          // escaped quote
+                        } else {
+                            s += '"'; i++; break;        // end of string
+                        }
+                    } else {
+                        s += line[i++];
+                    }
+                }
+                tokens.push({ type: 'string', value: s });
+            } else if (ch === "'") {
+                if (buf) { tokens.push({ type: 'code', value: buf }); buf = ''; }
+                tokens.push({ type: 'comment', value: line.substring(i) });
+                return tokens;
+            } else {
+                buf += ch; i++;
+            }
+        }
+        if (buf) tokens.push({ type: 'code', value: buf });
+        return tokens;
+    }
+
+    // Apply a transform only to code tokens (not strings or comments)
+    function processLine(line, codeFn) {
+        return tokenizeLine(line).map(tok =>
+            tok.type === 'code' ? codeFn(tok.value) : tok.value
+        ).join('');
+    }
+
+    // Return line with comment removed, trimmed
+    function stripComment(line) {
+        return tokenizeLine(line)
+            .filter(t => t.type !== 'comment')
+            .map(t => t.value)
+            .join('').trimEnd();
+    }
+
+    // ============================================================
+    // Step 1 — Evaluate arithmetic outside strings
+    // ============================================================
+    function formatNum(n) {
+        if (Number.isInteger(n)) return String(n);
+        return parseFloat(n.toPrecision(10)).toString();
+    }
+
+    function evalMath(code) {
+        return code.split('\n').map(line =>
+            processLine(line, part => {
+                let s = part, prev;
+
+                do { prev = s; s = s.replace(
+                    /(?<![a-zA-Z_\d.])(\d+(?:\.\d+)?)\s*\^\s*(\d+(?:\.\d+)?)(?![a-zA-Z_\d.])/g,
+                    (_, a, b) => formatNum(Math.pow(parseFloat(a), parseFloat(b))));
+                } while (s !== prev);
+
+                do { prev = s; s = s.replace(
+                    /(?<![a-zA-Z_\d.])(\d+(?:\.\d+)?)\s*([*/])\s*(\d+(?:\.\d+)?)(?![a-zA-Z_\d.])/g,
+                    (m, a, op, b) => { const nb = parseFloat(b); if (op==='/'&&nb===0) return m; return formatNum(op==='*'?parseFloat(a)*nb:parseFloat(a)/nb); });
+                } while (s !== prev);
+
+                do { prev = s; s = s.replace(
+                    /(?<![a-zA-Z_\d.])(\d+(?:\.\d+)?)\s*([+\-])\s*(\d+(?:\.\d+)?)(?![a-zA-Z_\d.])/g,
+                    (_, a, op, b) => formatNum(op==='+'?parseFloat(a)+parseFloat(b):parseFloat(a)-parseFloat(b)));
+                } while (s !== prev);
+
+                return s;
+            })
+        ).join('\n');
+    }
+
+    // ============================================================
+    // Step 2 — Resolve Chr() / ChrB() / ChrW() calls
+    // ============================================================
+    function resolveChr(code) {
+        return code.split('\n').map(line =>
+            processLine(line, part =>
+                part.replace(/Chr(?:B|W)?\((&H[0-9A-Fa-f]+|\d+)\)/gi, (m, n) => {
+                    const c = n.toUpperCase().startsWith('&H')
+                        ? parseInt(n.substring(2), 16) : parseInt(n);
+                    if (c === 0)  return 'vbNullChar';
+                    if (c === 9)  return 'vbTab';
+                    if (c === 10) return 'vbLf';
+                    if (c === 13) return 'vbCr';
+                    if (c >= 32 && c <= 126) {
+                        const ch = String.fromCharCode(c);
+                        return ch === '"' ? '""""' : '"' + ch + '"';
+                    }
+                    return m;
+                })
+            )
+        ).join('\n');
+    }
+
+    // ============================================================
+    // Step 3 — Resolve Replace(str, find, repl) with literal args
+    // ============================================================
+    function resolveReplace(code) {
+        return code.split('\n').map(line => {
+            if (line.trim().startsWith("'")) return line;
+            let s = line, prev;
+            do {
+                prev = s;
+                RE_REPL.lastIndex = 0;
+                s = s.replace(RE_REPL, (m, str, find, repl) => {
+                    str  = str.replace(/""/g, '"');
+                    find = find.replace(/""/g, '"');
+                    repl = repl.replace(/""/g, '"');
+                    if (!find) return '"' + str.replace(/"/g, '""') + '"';
+                    const result = str.split(find).join(repl);
+                    return '"' + result.replace(/"/g, '""') + '"';
+                });
+            } while (s !== prev);
+            return s;
+        }).join('\n');
+    }
+
+    // ============================================================
+    // Step 4 — Join adjacent string literals connected by & or +
+    // ============================================================
+    function joinConcat(code) {
+        return code.split('\n').map(line => {
+            let s = line, prev;
+            do {
+                prev = s;
+                RE_JOIN.lastIndex = 0;
+                s = s.replace(RE_JOIN, (m, a, b) => '"' + a + b + '"');
+            } while (s !== prev);
+            s = s.replace(/vbCr\s*&\s*vbLf/g, 'vbCrLf');
+            return s;
+        }).join('\n');
+    }
+
+    // ============================================================
+    // Step 5 — Beautify: re-indent VBScript
+    // ============================================================
+
+    // Split one line into individual statements on ':' (respects strings/comments)
+    function splitOnColon(line) {
+        const stmts = [];
+        let buf = '', i = 0, inStr = false;
+        while (i < line.length) {
+            const ch = line[i];
+            if (inStr) {
+                if (ch === '"') {
+                    if (i+1 < line.length && line[i+1] === '"') { buf += '""'; i += 2; }
+                    else { buf += '"'; i++; inStr = false; }
+                } else { buf += ch; i++; }
+            } else {
+                if      (ch === '"') { buf += ch; i++; inStr = true; }
+                else if (ch === "'") { buf += line.substring(i); i = line.length; }
+                else if (ch === ':') { if (buf.trim()) stmts.push(buf.trim()); buf = ''; i++; }
+                else                 { buf += ch; i++; }
+            }
+        }
+        if (buf.trim()) stmts.push(buf.trim());
+        return stmts;
+    }
+
+    function beautifyVBS(code) {
+        // Expand colon-separated statements onto individual lines first
+        const lines = code.split('\n').flatMap(line => splitOnColon(line));
+        let indent = 0;
+        const TAB = '    ';
+        const result = [];
+        const selectStack = [];
+
+        for (const rawLine of lines) {
+            const line = rawLine.trim();
+            if (line === '') { result.push(''); continue; }
+
+            if (line.startsWith("'") || /^rem\b/i.test(line)) {
+                result.push(TAB.repeat(indent) + line);
+                continue;
+            }
+
+            const nc = stripComment(line).trim().toUpperCase();
+
+            // Decrease indent BEFORE printing
+            if (/^END\s+SELECT\b/.test(nc)) {
+                indent = selectStack.length > 0 ? selectStack.pop() : Math.max(0, indent - 1);
+            } else if (/^END\s+(IF|SUB|FUNCTION|WITH|CLASS|PROPERTY)\b/.test(nc)) {
+                indent = Math.max(0, indent - 1);
+            } else if (/^(NEXT|LOOP|WEND)\b/.test(nc)) {
+                indent = Math.max(0, indent - 1);
+            } else if (/^(ELSEIF|ELSE)\b/.test(nc)) {
+                indent = Math.max(0, indent - 1);
+            } else if (/^CASE\b/.test(nc) && selectStack.length > 0) {
+                indent = selectStack[selectStack.length - 1] + 1;
+            }
+
+            result.push(TAB.repeat(Math.max(0, indent)) + line);
+
+            // Increase indent AFTER printing
+            if (/^END\b/.test(nc) || /^(NEXT|LOOP|WEND)\b/.test(nc)) {
+                // no change after closing keywords
+            } else if (/^(ELSEIF|ELSE)\b/.test(nc)) {
+                indent++;
+            } else if (/^CASE\b/.test(nc) && selectStack.length > 0) {
+                indent = selectStack[selectStack.length - 1] + 2;
+            } else if (/^SELECT\s+CASE\b/.test(nc)) {
+                selectStack.push(indent); indent++;
+            } else if (/^(SUB|FUNCTION|CLASS)\b/.test(nc)) {
+                indent++;
+            } else if (/^PROPERTY\s+(GET|LET|SET)\b/.test(nc)) {
+                indent++;
+            } else if (/^(FOR|WHILE|DO|WITH)\b/.test(nc)) {
+                indent++;
+            } else if (/^IF\b/.test(nc) && /\bTHEN\s*$/.test(nc)) {
+                indent++;
+            }
+        }
+        return result.join('\n');
+    }
+
+    // ============================================================
+    // Main pipeline
+    // ============================================================
+    function processCode() {
+        const input = document.getElementById('input').value;
+        if (!input.trim()) return;
+
+        const doMath    = document.getElementById('opt-math').checked;
+        const doChr     = document.getElementById('opt-chr').checked;
+        const doReplace = document.getElementById('opt-replace').checked;
+        const doConcat  = document.getElementById('opt-concat').checked;
+        const doBeauty  = document.getElementById('opt-beautify').checked;
+
+        let code = input.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+        const steps = [];
+
+        if (doMath)    { code = evalMath(code);       steps.push('math'); }
+        if (doChr)     { code = resolveChr(code);     steps.push('chr'); }
+        if (doReplace) { code = resolveReplace(code); steps.push('replace'); }
+        if (doConcat)  { code = joinConcat(code);     steps.push('concat'); }
+        if (doBeauty)  { code = beautifyVBS(code);    steps.push('beautify'); }
+
+        document.getElementById('output').value = code;
+        const lineCount = code.split('\n').length;
+        document.getElementById('status').textContent =
+            steps.length
+                ? lineCount + ' lines — applied: ' + steps.join(', ')
+                : lineCount + ' lines — no transforms selected';
+    }
+
+    function copyOutput(btn) {
+        const val = document.getElementById('output').value;
+        if (!val) return;
+        navigator.clipboard.writeText(val).then(() => {
+            const orig = btn.textContent;
+            btn.textContent = 'Copied!';
+            setTimeout(() => { btn.textContent = orig; }, 1200);
+        });
+    }
+
+    function clearAll() {
+        document.getElementById('input').value = '';
+        document.getElementById('output').value = '';
+        document.getElementById('status').textContent = '';
+    }
+
+    document.addEventListener('keydown', e => {
+        if (e.ctrlKey && e.key === 'Enter') processCode();
+    });
+    </script>
+</body>
+</html>
