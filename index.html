@@ -323,11 +323,10 @@
                     if (c === 9)  return 'vbTab';
                     if (c === 10) return 'vbLf';
                     if (c === 13) return 'vbCr';
-                    if (c >= 32 && c <= 126) {
-                        const ch = String.fromCharCode(c);
-                        return ch === '"' ? '""""' : '"' + ch + '"';
-                    }
-                    return m;
+                    if (c < 32) return m;                        // other control chars
+                    if (c >= 0xD800 && c <= 0xDFFF) return m;   // surrogate range (invalid standalone)
+                    const ch = String.fromCharCode(c);
+                    return ch === '"' ? '""""' : '"' + ch + '"';
                 })
             )
         ).join('\n');
@@ -395,7 +394,16 @@
             }
         }
         if (buf.trim()) stmts.push(buf.trim());
-        return stmts;
+
+        // Split "If/ElseIf cond Then stmt" -> ["If/ElseIf cond Then", "stmt"]
+        // so the beautifier sees a block-If opener with Then at end of line.
+        const expanded = [];
+        for (const s of stmts) {
+            const m = s.match(/^((?:If|ElseIf)\b.+\bThen)\s+(\S.+)$/i);
+            if (m) { expanded.push(m[1]); expanded.push(m[2]); }
+            else   { expanded.push(s); }
+        }
+        return expanded;
     }
 
     function beautifyVBS(code) {
